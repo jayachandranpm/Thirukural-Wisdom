@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from sklearn.metrics.pairwise import cosine_similarity
+import faiss
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 
@@ -40,31 +40,53 @@ def load_thirukural_dataset():
         st.error(f"Error loading dataset: {e}")
         return pd.DataFrame()
 
-# Generate embeddings
+# Generate embeddings and FAISS index
 @st.cache_data
 def generate_and_store_embeddings(df):
     EMBEDDINGS_FILE = "thirukural_embeddings.json"
-    if os.path.exists(EMBEDDINGS_FILE):
+    FAISS_INDEX_FILE = "thirukural_faiss_index.idx"
+    
+    # Check if embeddings and index already exist
+    if os.path.exists(EMBEDDINGS_FILE) and os.path.exists(FAISS_INDEX_FILE):
         with open(EMBEDDINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return np.array(data["embeddings"]), data["texts"]
+        
+        # Load FAISS index
+        faiss_index = faiss.read_index(FAISS_INDEX_FILE)
+        return np.array(data["embeddings"]), data["texts"], faiss_index
 
     try:
         model = SentenceTransformer('all-MiniLM-L6-v2')
         st.write("⏳ Generating embeddings, please wait...")
+        
+        # Create embedding text
         df["EmbeddingText"] = df.apply(create_embedding_text, axis=1)
+        
+        # Generate embeddings
         embeddings = model.encode(df["EmbeddingText"].tolist(), show_progress_bar=True)
-
+        
+        # Convert to float32 for FAISS
+        embeddings_float32 = embeddings.astype(np.float32)
+        
+        # Create FAISS index
+        dimension = embeddings_float32.shape[1]
+        faiss_index = faiss.IndexFlatL2(dimension)  # L2 distance (Euclidean)
+        faiss_index.add(embeddings_float32)
+        
+        # Save embeddings
         with open(EMBEDDINGS_FILE, "w", encoding="utf-8") as f:
             json.dump({
                 "embeddings": embeddings.tolist(),
                 "texts": df["EmbeddingText"].tolist()
             }, f, ensure_ascii=False)
+        
+        # Save FAISS index
+        faiss.write_index(faiss_index, FAISS_INDEX_FILE)
 
-        return np.array(embeddings), df["EmbeddingText"].tolist()
+        return np.array(embeddings), df["EmbeddingText"].tolist(), faiss_index
     except Exception as e:
         st.error(f"Error generating embeddings: {e}")
-        return np.array([]), []
+        return np.array([]), [], None
 
 # Create text for embeddings
 def create_embedding_text(row):
@@ -82,20 +104,21 @@ def create_embedding_text(row):
     Solomon Pappaiya: {row['Solomon_Pappaiya']}
     """.strip()
 
-# Search Thirukural using cosine similarity
-def search_thirukural(query, df, embeddings, texts, top_k=5):
-    if embeddings.size == 0:
-        st.error("🚨 No embeddings found. Generate embeddings first.")
+# Search Thirukural using FAISS
+def search_thirukural(query, df, embeddings, texts, faiss_index, top_k=5):
+    if embeddings.size == 0 or faiss_index is None:
+        st.error("🚨 No embeddings or FAISS index found. Generate embeddings first.")
         return []
 
     try:
         model = SentenceTransformer('all-MiniLM-L6-v2')
-        query_emb = model.encode([query])[0]
-        similarities = cosine_similarity([query_emb], embeddings)[0]
-        top_indices = similarities.argsort()[-top_k:][::-1]
-
+        query_emb = model.encode([query])[0].astype(np.float32)
+        
+        # Search using FAISS
+        distances, indices = faiss_index.search(query_emb.reshape(1, -1), top_k)
+        
         results = []
-        for idx in top_indices:
+        for dist, idx in zip(distances[0], indices[0]):
             row = df.iloc[idx]
             results.append({
                 "Kural": row["Kural"],
@@ -109,7 +132,7 @@ def search_thirukural(query, df, embeddings, texts, top_k=5):
                 "Parimezhalagar_Urai": row["Parimezhalagar_Urai"],
                 "M_Varadharajanar": row["M_Varadharajanar"],
                 "Solomon_Pappaiya": row["Solomon_Pappaiya"],
-                "Similarity": round(float(similarities[idx]), 4),
+                "Distance": round(float(dist), 4),  # Using distance instead of similarity
             })
 
         return results
@@ -119,7 +142,7 @@ def search_thirukural(query, df, embeddings, texts, top_k=5):
 
 # Load dataset and generate embeddings
 df = load_thirukural_dataset()
-embeddings, texts = generate_and_store_embeddings(df)
+embeddings, texts, faiss_index = generate_and_store_embeddings(df)
 
 # Main UI layout
 st.header("🔍 Search for Thirukural Wisdom")
@@ -137,14 +160,14 @@ with col2:
 if st.button("🔎 Search"):
     if query.strip():
         with st.spinner("Fetching the most relevant Thirukurals..."):
-            results = search_thirukural(query, df, embeddings, texts, top_k=num_results)
+            results = search_thirukural(query, df, embeddings, texts, faiss_index, top_k=num_results)
 
             if not results:
                 st.error("❌ No results found. Try a different query.")
             else:
                 st.subheader("📜 Top Matching Thirukurals")
                 for i, result in enumerate(results):
-                    with st.expander(f"{i+1}. {result['English Couplet']} (Similarity: {result['Similarity']})"):
+                    with st.expander(f"{i+1}. {result['English Couplet']} (Distance: {result['Distance']})"):
                         st.markdown(f"**📖 Original (Tamil):**  \n{result['Kural']}", unsafe_allow_html=True)
                         st.write(f"**🔤 Transliteration:** {result['Transliteration']}")
                         st.write(f"**📝 Meaning:** {result['Meaning']}")
