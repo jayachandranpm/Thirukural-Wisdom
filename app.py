@@ -154,6 +154,19 @@ with col1:
         "Enter a wisdom-related query / scene from your life experiences / topic:",
         placeholder="e.g., honesty, leadership, friendship"
     )
+
+    # Enhanced Search Capability - Contextual Similarity Search for a Specific Verse
+    specific_verse_search = st.checkbox("Contextually Search for a Specific Verse")
+    if specific_verse_search:
+        st.markdown("Searching for verses similar to:")
+        st.markdown("""
+            **Original (Tamil):** அருளில்லார்க்கு அவ்வுலகம் இல்லை பொருளில்லார்க்கு இவ்வுலகம் இல்லாகி யாங்கு  
+            **Transliteration:** Arulillaarkku Avvulakam Illai Porulillaarkku Ivvulakam Illaaki Yaangu  
+            **Meaning:** Life lacks significance without compassion or resources
+        """)
+        query = "Importance of compassion and resources in life's meaning, spiritual and material wealth, significance of empathy and prosperity"
+
+
 with col2:
     num_results = st.slider("Results:", min_value=1, max_value=10, value=5)
 
